@@ -657,7 +657,7 @@ const CONFIG = {
 
   PAGE_SIZE: 8,
   MULTA_DIARIA: 0.02, // 2% ao dia (simulação)
-  DEFAULT_REF_DATE: "2026-02-19", // data usada como "hoje" para os cálculos de atraso/vencimento
+  DEFAULT_REF_DATE: new Date().toISOString().slice(0,10), // data usada como "hoje" para os cálculos de atraso/vencimento
 };
 
 /* Dados locais de exemplo — usados automaticamente caso a planilha
@@ -749,19 +749,36 @@ const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','
 /* ================================================================
    NORMALIZAÇÃO DOS DADOS DA PLANILHA
    ================================================================ */
+function getField(r, ...names){
+  for(const name of names){
+    if(Object.prototype.hasOwnProperty.call(r, name) && r[name] != null && String(r[name]).trim() !== ''){
+      return r[name];
+    }
+  }
+  return '';
+}
+
 function normalizeRow(r){
-  const id = (r['ID']||'').toString().trim();
-  const nome = (r['Nome Completo']||'').toString().trim();
+  const id = String(getField(r,'ID','Id','id')).trim();
+  const nome = String(getField(r,'Nome Completo','Nome','Aluno','ALUNO')).trim();
   if(!id || !nome) return null;
+
+  const plano = String(getField(r,'Plano','PLANO')).trim() || 'Mensal';
+  const valorRaw = getField(r,'Valor Mensal','Valor Mensal (R$)','Valor','VALOR');
+  const statusRaw = String(getField(r,'Status Pagamento','Status','STATUS')).trim();
+  const dataPagRaw = getField(r,'Data Pagamento','Data Pagto.','DATA PAGAMENTO');
+  const formaRaw = getField(r,'Forma Pagamento','Forma Pagto.','FORMA PAGAMENTO');
+  const obsRaw = getField(r,'Observações','Observacoes','OBSERVAÇÕES');
+
   return {
     id, nome,
-    plano: (r['Plano']||'').toString().trim() || 'Mensal',
-    valorMensal: parseBRL(r['Valor Mensal (R$)']),
-    vencimentoDate: parseDateBR(r['Vencimento']),
-    status: (r['Status Pagamento']||'').toString().trim() || 'Pendente',
-    dataPagamentoDate: parseDateBR(r['Data Pagamento']),
-    forma: (r['Forma Pagamento']||'').toString().trim(),
-    obs: (r['Observações']||'').toString().trim(),
+    plano,
+    valorMensal: parseBRL(valorRaw),
+    vencimentoDate: parseDateBR(getField(r,'Vencimento','VENCIMENTO')),
+    status: statusRaw || 'Pendente',
+    dataPagamentoDate: parseDateBR(dataPagRaw),
+    forma: String(formaRaw||'').trim(),
+    obs: String(obsRaw||'').trim(),
   };
 }
 
@@ -783,16 +800,31 @@ function deriveRow(s, refDate){
 }
 function getAllDerived(){ return state.raw.map(s=>deriveRow(s, state.refDate)); }
 
+function getSheetUrl(){
+  const url = new URL(CONFIG.SHEET_CSV_URL);
+  url.searchParams.set('cb', Date.now().toString());
+  return url.toString();
+}
+
+async function fetchSheetCSV(){
+  const res = await fetch(getSheetUrl(), {
+    method: 'GET',
+    cache: 'no-store',
+    headers: { 'Cache-Control': 'no-cache' }
+  });
+  if(!res.ok) throw new Error('HTTP '+res.status);
+  const text = await res.text();
+  if(!text || text.trim().length < 10) throw new Error('CSV vazio');
+  return text;
+}
+
 /* ================================================================
    CARREGAMENTO DA PLANILHA
    ================================================================ */
 async function init(){
   document.getElementById('refDateInput').value = toISODate(state.refDate);
   try{
-    const res = await fetch(CONFIG.SHEET_CSV_URL, { cache:'no-store' });
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const text = await res.text();
-    if(!text || text.trim().length < 10) throw new Error('CSV vazio');
+    const text = await fetchSheetCSV();
     loadCSV(text, 'remoto');
     toast('Planilha carregada com sucesso.', 'ok');
   }catch(err){
@@ -1369,9 +1401,7 @@ document.getElementById('refDateInput').addEventListener('change', e=>{
 document.getElementById('refreshBtn').addEventListener('click', async function(){
   this.classList.add('spinning');
   try{
-    const res = await fetch(CONFIG.SHEET_CSV_URL, { cache:'no-store' });
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const text = await res.text();
+    const text = await fetchSheetCSV();
     loadCSV(text, 'remoto');
     toast('Dados atualizados com sucesso.', 'ok');
   }catch(err){
@@ -1416,6 +1446,16 @@ document.querySelectorAll('[data-nav]').forEach(link=>{
    START
    ================================================================ */
 init();
+
+setInterval(async ()=>{
+  try{
+    const text = await fetchSheetCSV();
+    loadCSV(text, 'remoto');
+    console.log('Planilha sincronizada automaticamente.');
+  }catch(err){
+    console.warn('Sincronização automática falhou:', err);
+  }
+}, 60000);
 </script>
 </body>
 </html>
