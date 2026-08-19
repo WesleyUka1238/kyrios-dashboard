@@ -652,12 +652,12 @@ table.data-table{ width:100%; border-collapse:collapse; min-width:1180px; }
    ================================================================ */
 const CONFIG = {
   // >>>>>>>>>>>>>>>>>>  COLE O LINK DA PLANILHA AQUI  <<<<<<<<<<<<<<<<<<
-  SHEET_CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRhJANGXJY4YZFO2kOjSDrb7vZFeP3vLIEWtWSi_-pnu7KAV9AewtugCsEeoHdlMbgpBk19flRUAceK/pub?output=csv",
+  SHEET_CSV_URL: "https://script.google.com/macros/s/AKfycbxKosH6FaRGQeQX__AxIgenuC6feMZnc5-qFHOhGJfy5sNUnjwmlPBW4CbE4u4pcmUrLA/exec",
   // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
 
   PAGE_SIZE: 8,
   MULTA_DIARIA: 0.02, // 2% ao dia (simulação)
-  DEFAULT_REF_DATE: new Date().toISOString().slice(0,10), // data usada como "hoje" para os cálculos de atraso/vencimento
+  DEFAULT_REF_DATE: "2026-08-19", // data usada como "hoje" para os cálculos de atraso/vencimento
 };
 
 /* Dados locais de exemplo — usados automaticamente caso a planilha
@@ -749,41 +749,66 @@ const MONTHS_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','
 /* ================================================================
    NORMALIZAÇÃO DOS DADOS DA PLANILHA
    ================================================================ */
-function getField(r, ...names){
-  for(const name of names){
-    if(Object.prototype.hasOwnProperty.call(r, name) && r[name] != null && String(r[name]).trim() !== ''){
-      return r[name];
-    }
-  }
-  return '';
-}
-
 function normalizeRow(r){
-  const id = String(getField(r,'ID','Id','id')).trim();
-  const nome = String(getField(r,'Nome Completo','Nome','Aluno','ALUNO')).trim();
+  // Aceita diferentes nomes de cabeçalho para funcionar com a planilha atual
+  // e com versões anteriores da planilha Kyrios.
+  const get = (...keys) => {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(r, key) && String(r[key] ?? '').trim() !== '') {
+        return String(r[key]).trim();
+      }
+    }
+    return '';
+  };
+
+  const id = get('ID','Id','id');
+  const nome = get('Nome Completo','ALUNO','Aluno','Nome','NOME COMPLETO');
+
   if(!id || !nome) return null;
 
-  const plano = String(getField(r,'Plano','PLANO')).trim() || 'Mensal';
-  const valorRaw = getField(r,'Valor Mensal','Valor Mensal (R$)','Valor','VALOR');
-  const statusRaw = String(getField(r,'Status Pagamento','Status','STATUS')).trim();
-  const dataPagRaw = getField(r,'Data Pagamento','Data Pagto.','DATA PAGAMENTO');
-  const formaRaw = getField(r,'Forma Pagamento','Forma Pagto.','FORMA PAGAMENTO');
-  const obsRaw = getField(r,'Observações','Observacoes','OBSERVAÇÕES');
-
   return {
-    id, nome,
-    plano,
-    valorMensal: parseBRL(valorRaw),
-    vencimentoDate: parseDateBR(getField(r,'Vencimento','VENCIMENTO')),
-    status: statusRaw || 'Pendente',
-    dataPagamentoDate: parseDateBR(dataPagRaw),
-    forma: String(formaRaw||'').trim(),
-    obs: String(obsRaw||'').trim(),
+    id,
+    nome,
+    plano: get('Plano','PLANO') || 'Mensal',
+    valorMensal: parseBRL(get(
+      'Valor Mensal (R$)',
+      'Valor Mensal',
+      'VALOR',
+      'Valor',
+      'Valor mensal',
+      'VALOR MENSAL'
+    )),
+    vencimentoDate: parseDateBR(get(
+      'Vencimento',
+      'VENCIMENTO',
+      'Data Vencimento',
+      'Data de Vencimento'
+    )),
+    status: get(
+      'Status Pagamento',
+      'STATUS PAGAMENTO',
+      'Status',
+      'STATUS'
+    ) || 'Pendente',
+    dataPagamentoDate: parseDateBR(get(
+      'Data Pagamento',
+      'Data Pagto.',
+      'Data Pagto',
+      'DATA PAGAMENTO',
+      'DATA PAGTO.'
+    )),
+    forma: get(
+      'Forma Pagamento',
+      'Forma Pagto.',
+      'Forma Pagto',
+      'FORMA PAGAMENTO',
+      'FORMA PAGTO.'
+    ),
+    obs: get('Observações','OBSERVAÇÕES','Observacao','Observação'),
   };
 }
-
 function deriveRow(s, refDate){
-  const isPago = s.status === 'Pago';
+  const isPago = String(s.status).trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'') === 'pago';
   let atrasoDias = 0;
   if(!isPago && s.vencimentoDate){
     const diff = diffDays(refDate, s.vencimentoDate);
@@ -800,31 +825,18 @@ function deriveRow(s, refDate){
 }
 function getAllDerived(){ return state.raw.map(s=>deriveRow(s, state.refDate)); }
 
-function getSheetUrl(){
-  const url = new URL(CONFIG.SHEET_CSV_URL);
-  url.searchParams.set('cb', Date.now().toString());
-  return url.toString();
-}
-
-async function fetchSheetCSV(){
-  const res = await fetch(getSheetUrl(), {
-    method: 'GET',
-    cache: 'no-store',
-    headers: { 'Cache-Control': 'no-cache' }
-  });
-  if(!res.ok) throw new Error('HTTP '+res.status);
-  const text = await res.text();
-  if(!text || text.trim().length < 10) throw new Error('CSV vazio');
-  return text;
-}
-
 /* ================================================================
    CARREGAMENTO DA PLANILHA
    ================================================================ */
 async function init(){
+  // Os dados passam pelo Google Apps Script para evitar bloqueios de acesso
+  // entre o GitHub Pages e o Google Sheets (CORS).
   document.getElementById('refDateInput').value = toISODate(state.refDate);
   try{
-    const text = await fetchSheetCSV();
+    const res = await fetch(CONFIG.SHEET_CSV_URL, { cache:'no-store' });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const text = await res.text();
+    if(!text || text.trim().length < 10) throw new Error('CSV vazio');
     loadCSV(text, 'remoto');
     toast('Planilha carregada com sucesso.', 'ok');
   }catch(err){
@@ -1401,7 +1413,9 @@ document.getElementById('refDateInput').addEventListener('change', e=>{
 document.getElementById('refreshBtn').addEventListener('click', async function(){
   this.classList.add('spinning');
   try{
-    const text = await fetchSheetCSV();
+    const res = await fetch(CONFIG.SHEET_CSV_URL, { cache:'no-store' });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const text = await res.text();
     loadCSV(text, 'remoto');
     toast('Dados atualizados com sucesso.', 'ok');
   }catch(err){
@@ -1446,16 +1460,22 @@ document.querySelectorAll('[data-nav]').forEach(link=>{
    START
    ================================================================ */
 init();
-
-setInterval(async ()=>{
+// Atualização automática a cada 60 segundos.
+setInterval(async function(){
   try{
-    const text = await fetchSheetCSV();
+    const res = await fetch(CONFIG.SHEET_CSV_URL + '?t=' + Date.now(), {
+      cache:'no-store',
+      redirect:'follow'
+    });
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const text = await res.text();
+    if(!text || text.trim().length < 10) throw new Error('Resposta vazia');
     loadCSV(text, 'remoto');
-    console.log('Planilha sincronizada automaticamente.');
   }catch(err){
-    console.warn('Sincronização automática falhou:', err);
+    console.warn('Atualização automática falhou:', err);
   }
 }, 60000);
+
 </script>
 </body>
 </html>
